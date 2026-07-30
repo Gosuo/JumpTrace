@@ -143,6 +143,64 @@ impl JumpTraceApp {
         });
     }
 
+    fn reachable_systems_panel(&self, ui: &mut egui::Ui) {
+        let (universe, origin) = match (&self.universe, self.current_system_id) {
+            (Ok(universe), Some(id)) => {
+                let Some(origin) = universe.system(id) else {
+                    return;
+                };
+                (universe, origin)
+            }
+            _ => {
+                ui.small("Select a current system to calculate one-jump destinations.");
+                return;
+            }
+        };
+
+        let Some(measured_bearing) = jump_bearing(self.north_axis, self.jump_tunnel) else {
+            ui.small("Draw both the north axis and jump tunnel to rank possible destinations.");
+            return;
+        };
+
+        let maximum_range = self.jump_ship_class.max_range_ly();
+        let candidates = universe.systems_matching_jump_bearing(
+            origin,
+            maximum_range,
+            f64::from(measured_bearing),
+        );
+        let heading = format!(
+            "Ranked destinations from {}: {} within {:.2} ly",
+            origin.name,
+            candidates.len(),
+            maximum_range
+        );
+
+        egui::CollapsingHeader::new(heading)
+            .id_salt("reachable_systems")
+            .default_open(true)
+            .show(ui, |ui| {
+                ui.small(format!(
+                    "Measured bearing: {measured_bearing:.1}°. Ranked by angular error on the SDE X/Z map plane (+Z north)."
+                ));
+                ui.small("Excludes high-sec, wormhole space, and Pochven; dynamic cyno restrictions are not included.");
+                egui::ScrollArea::vertical()
+                    .id_salt("reachable_system_list")
+                    .max_height(160.0)
+                    .show(ui, |ui| {
+                        for candidate in candidates {
+                            ui.label(format!(
+                                "{} · error {:.1}° · bearing {:.1}° · {:.3} ly · security {:.1}",
+                                candidate.system.name,
+                                candidate.angular_error_deg,
+                                candidate.bearing_deg,
+                                candidate.distance_ly,
+                                candidate.system.security
+                            ));
+                        }
+                    });
+            });
+    }
+
     fn choose_screenshot(&mut self, context: &egui::Context) {
         let Some(path) = rfd::FileDialog::new()
             .add_filter("Image", &["png", "jpg", "jpeg", "webp", "bmp"])
@@ -193,6 +251,7 @@ impl eframe::App for JumpTraceApp {
 
         self.system_selector(ui);
         self.jump_range_selector(ui);
+        self.reachable_systems_panel(ui);
 
         ui.horizontal(|ui| {
             if ui.button("Open screenshot…").clicked() {
