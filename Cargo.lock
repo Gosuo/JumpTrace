@@ -1681,11 +1681,14 @@ dependencies = [
 
 [[package]]
 name = "jumptrace"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
+ "arboard",
  "csv",
  "eframe",
  "image",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "rfd",
  "serde",
 ]

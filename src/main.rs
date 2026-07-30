@@ -216,6 +216,33 @@ impl JumpTraceApp {
             });
     }
 
+    fn set_screenshot(&mut self, texture: egui::TextureHandle, name: String) {
+        self.screenshot = Some(texture);
+        self.screenshot_name = Some(name);
+        self.load_error = None;
+        self.north_axis = None;
+        self.right_axis = None;
+        self.jump_tunnel = None;
+        self.annotation_tool = AnnotationTool::NorthAxis;
+        self.drawing_tool = None;
+        self.zoom = 1.0;
+        self.scroll_offset = egui::Vec2::ZERO;
+    }
+
+    fn paste_screenshot(&mut self, context: &egui::Context) {
+        match clipboard_color_image() {
+            Ok(color_image) => {
+                let texture = context.load_texture(
+                    "clipboard-screenshot",
+                    color_image,
+                    egui::TextureOptions::LINEAR,
+                );
+                self.set_screenshot(texture, "Pasted screenshot".to_owned());
+            }
+            Err(error) => self.load_error = Some(error),
+        }
+    }
+
     fn choose_screenshot(&mut self, context: &egui::Context) {
         let Some(path) = rfd::FileDialog::new()
             .add_filter("Image", &["png", "jpg", "jpeg", "webp", "bmp"])
@@ -226,18 +253,11 @@ impl JumpTraceApp {
 
         match load_texture(context, &path) {
             Ok(texture) => {
-                self.screenshot = Some(texture);
-                self.screenshot_name = path
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned());
-                self.load_error = None;
-                self.north_axis = None;
-                self.right_axis = None;
-                self.jump_tunnel = None;
-                self.annotation_tool = AnnotationTool::NorthAxis;
-                self.drawing_tool = None;
-                self.zoom = 1.0;
-                self.scroll_offset = egui::Vec2::ZERO;
+                let name = path.file_name().map_or_else(
+                    || "Opened screenshot".to_owned(),
+                    |name| name.to_string_lossy().into_owned(),
+                );
+                self.set_screenshot(texture, name);
             }
             Err(error) => {
                 self.load_error = Some(error);
@@ -269,15 +289,27 @@ impl eframe::App for JumpTraceApp {
         self.jump_range_selector(ui);
         self.reachable_systems_panel(ui);
 
+        let paste_shortcut = ui.input(|input| {
+            (input.modifiers.command || input.modifiers.ctrl) && input.key_pressed(egui::Key::V)
+        }) && !ui.ctx().egui_wants_keyboard_input();
+        let mut paste_requested = paste_shortcut;
+
         ui.horizontal(|ui| {
             if ui.button("Open screenshot…").clicked() {
                 self.choose_screenshot(ui.ctx());
+            }
+            if ui.button("Paste screenshot").clicked() {
+                paste_requested = true;
             }
 
             if let Some(name) = &self.screenshot_name {
                 ui.label(name);
             }
         });
+
+        if paste_requested {
+            self.paste_screenshot(ui.ctx());
+        }
 
         if let Some(error) = &self.load_error {
             ui.colored_label(ui.visuals().error_fg_color, error);
@@ -296,7 +328,7 @@ impl eframe::App for JumpTraceApp {
                 ui.selectable_value(
                     &mut self.annotation_tool,
                     AnnotationTool::RightAxis,
-                    "Right axis (200 km)",
+                    "Right axis",
                 );
                 ui.selectable_value(
                     &mut self.annotation_tool,
@@ -340,16 +372,14 @@ impl eframe::App for JumpTraceApp {
                 AnnotationTool::NorthAxis => {
                     "Drag from the overlay center to the north 200 km marker."
                 }
-                AnnotationTool::RightAxis => {
-                    "Drag from the same center to the right-side 200 km marker."
-                }
+                AnnotationTool::RightAxis => "Drag the right axis from the same center.",
                 AnnotationTool::JumpTunnel => "Drag in the direction of the jump tunnel.",
             };
             ui.strong(format!(
                 "Active tool: {}",
                 match self.annotation_tool {
                     AnnotationTool::NorthAxis => "North axis (200 km)",
-                    AnnotationTool::RightAxis => "Right axis (200 km)",
+                    AnnotationTool::RightAxis => "Right axis",
                     AnnotationTool::JumpTunnel => "Jump tunnel",
                 }
             ));
@@ -438,7 +468,7 @@ impl eframe::App for JumpTraceApp {
                             ui.painter(),
                             response.rect,
                             axis,
-                            "Right 200",
+                            "Right",
                             egui::Color32::YELLOW,
                         );
                     }
@@ -545,6 +575,66 @@ fn paint_annotation(
         egui::FontId::proportional(16.0),
         color,
     );
+}
+
+fn clipboard_color_image() -> Result<egui::ColorImage, String> {
+    let arboard_result = (|| {
+        let mut clipboard = arboard::Clipboard::new()
+            .map_err(|error| format!("Could not access the clipboard: {error}"))?;
+        let image = clipboard.get_image().map_err(|error| error.to_string())?;
+        color_image_from_rgba([image.width, image.height], image.bytes.as_ref())
+    })();
+
+    match arboard_result {
+        Ok(image) => Ok(image),
+        Err(arboard_error) => {
+            #[cfg(target_os = "macos")]
+            {
+                macos_clipboard_color_image().map_err(|native_error| {
+                    format!(
+                        "Could not read a clipboard image. arboard: {arboard_error}; macOS fallback: {native_error}"
+                    )
+                })
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Err(format!(
+                    "The clipboard does not contain an image: {arboard_error}"
+                ))
+            }
+        }
+    }
+}
+
+fn color_image_from_rgba(size: [usize; 2], bytes: &[u8]) -> Result<egui::ColorImage, String> {
+    let expected_bytes = size[0]
+        .checked_mul(size[1])
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| "Clipboard image dimensions are too large".to_owned())?;
+    if bytes.len() != expected_bytes {
+        return Err("Clipboard image has invalid RGBA data".to_owned());
+    }
+
+    Ok(egui::ColorImage::from_rgba_unmultiplied(size, bytes))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_clipboard_color_image() -> Result<egui::ColorImage, String> {
+    use objc2_app_kit::{NSPasteboard, NSPasteboardTypePNG};
+
+    let pasteboard = NSPasteboard::generalPasteboard();
+    // SAFETY: NSPasteboardTypePNG is a system-provided immutable global NSString.
+    let png_type = unsafe { NSPasteboardTypePNG };
+    let data = pasteboard
+        .dataForType(png_type)
+        .ok_or_else(|| "the pasteboard has no PNG representation".to_owned())?;
+    let decoded = image::load_from_memory_with_format(&data.to_vec(), image::ImageFormat::Png)
+        .map_err(|error| format!("could not decode native PNG data: {error}"))?
+        .into_rgba8();
+    color_image_from_rgba(
+        [decoded.width() as usize, decoded.height() as usize],
+        decoded.as_raw(),
+    )
 }
 
 fn load_texture(context: &egui::Context, path: &Path) -> Result<egui::TextureHandle, String> {
