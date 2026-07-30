@@ -1,0 +1,11 @@
+[package]
+name = "jumptrace"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+csv = "1.4.0"
+eframe = "0.35.0"
+image = { version = "0.25.10", default-features = false, features = ["bmp", "jpeg", "png", "webp"] }
+rfd = "0.17.2"
+serde = { version = "1.0.229", features = ["derive"] }
