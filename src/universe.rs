@@ -28,6 +28,38 @@ impl Universe {
         Self::from_csv(SOLAR_SYSTEMS_CSV)
     }
 
+    pub fn system(&self, id: u32) -> Option<&SolarSystem> {
+        self.systems.iter().find(|system| system.id == id)
+    }
+
+    pub fn search_systems(&self, query: &str, limit: usize) -> Vec<&SolarSystem> {
+        let query = query.trim().to_lowercase();
+        if query.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+
+        let mut matches: Vec<_> = self
+            .systems
+            .iter()
+            .filter(|system| system.name.to_lowercase().starts_with(&query))
+            .take(limit)
+            .collect();
+
+        if matches.len() < limit {
+            matches.extend(
+                self.systems
+                    .iter()
+                    .filter(|system| {
+                        let name = system.name.to_lowercase();
+                        !name.starts_with(&query) && name.contains(&query)
+                    })
+                    .take(limit - matches.len()),
+            );
+        }
+
+        matches
+    }
+
     fn from_csv(data: &str) -> Result<Self, String> {
         let mut reader = csv::Reader::from_reader(data.as_bytes());
         let mut systems = Vec::new();
@@ -121,5 +153,19 @@ mod tests {
         );
         assert!(tanoo.security.is_finite());
         assert_eq!(tanoo.security_class.as_deref(), Some("B"));
+    }
+
+    #[test]
+    fn search_prioritizes_name_prefixes() {
+        let universe = Universe::load_embedded().expect("embedded SDE data should be valid");
+        let matches = universe.search_systems("tan", 5);
+
+        assert!(!matches.is_empty());
+        assert_eq!(matches[0].name, "Tanoo");
+        assert!(
+            matches
+                .iter()
+                .all(|system| system.name.to_lowercase().contains("tan"))
+        );
     }
 }

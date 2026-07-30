@@ -2,6 +2,7 @@ use std::path::Path;
 
 use eframe::egui;
 
+mod jump_range;
 pub mod universe;
 
 fn main() -> eframe::Result {
@@ -28,6 +29,9 @@ enum AnnotationTool {
 
 struct JumpTraceApp {
     universe: Result<universe::Universe, String>,
+    system_query: String,
+    current_system_id: Option<u32>,
+    jump_ship_class: jump_range::JumpShipClass,
     screenshot: Option<egui::TextureHandle>,
     screenshot_name: Option<String>,
     load_error: Option<String>,
@@ -43,6 +47,9 @@ impl Default for JumpTraceApp {
     fn default() -> Self {
         Self {
             universe: universe::Universe::load_embedded(),
+            system_query: String::new(),
+            current_system_id: None,
+            jump_ship_class: jump_range::JumpShipClass::JumpFreighterRorqual,
             screenshot: None,
             screenshot_name: None,
             load_error: None,
@@ -57,6 +64,85 @@ impl Default for JumpTraceApp {
 }
 
 impl JumpTraceApp {
+    fn system_selector(&mut self, ui: &mut egui::Ui) {
+        ui.group(|ui| {
+            ui.horizontal(|ui| {
+                ui.label("Current system:");
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut self.system_query)
+                        .hint_text("Type a solar-system name")
+                        .desired_width(240.0),
+                );
+
+                if response.changed() {
+                    self.current_system_id = None;
+                }
+            });
+
+            let suggestions: Vec<_> = match &self.universe {
+                Ok(universe)
+                    if self.current_system_id.is_none() && !self.system_query.trim().is_empty() =>
+                {
+                    universe
+                        .search_systems(&self.system_query, 8)
+                        .into_iter()
+                        .map(|system| (system.id, system.name.clone()))
+                        .collect()
+                }
+                _ => Vec::new(),
+            };
+
+            if !suggestions.is_empty() {
+                egui::ScrollArea::vertical()
+                    .id_salt("system_suggestions")
+                    .max_height(140.0)
+                    .show(ui, |ui| {
+                        for (id, name) in suggestions {
+                            if ui.selectable_label(false, &name).clicked() {
+                                self.current_system_id = Some(id);
+                                self.system_query = name;
+                            }
+                        }
+                    });
+            } else if self.current_system_id.is_none() && !self.system_query.trim().is_empty() {
+                ui.small("No matching solar systems.");
+            }
+
+            if let (Ok(universe), Some(id)) = (&self.universe, self.current_system_id)
+                && let Some(system) = universe.system(id)
+            {
+                ui.small(format!(
+                    "Selected: {} · ID {} · Security {:.1}",
+                    system.name, system.id, system.security
+                ));
+            }
+        });
+    }
+
+    fn jump_range_selector(&mut self, ui: &mut egui::Ui) {
+        ui.group(|ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Jump ship:");
+                egui::ComboBox::from_id_salt("jump_ship_class")
+                    .selected_text(self.jump_ship_class.label())
+                    .show_ui(ui, |ui| {
+                        for ship_class in jump_range::JumpShipClass::ALL {
+                            ui.selectable_value(
+                                &mut self.jump_ship_class,
+                                ship_class,
+                                ship_class.label(),
+                            );
+                        }
+                    });
+            });
+
+            ui.small(format!(
+                "Maximum range: {:.2} ly (JDC V)",
+                self.jump_ship_class.max_range_ly()
+            ));
+        });
+    }
+
     fn choose_screenshot(&mut self, context: &egui::Context) {
         let Some(path) = rfd::FileDialog::new()
             .add_filter("Image", &["png", "jpg", "jpeg", "webp", "bmp"])
@@ -104,6 +190,9 @@ impl eframe::App for JumpTraceApp {
                 );
             }
         }
+
+        self.system_selector(ui);
+        self.jump_range_selector(ui);
 
         ui.horizontal(|ui| {
             if ui.button("Open screenshot…").clicked() {
