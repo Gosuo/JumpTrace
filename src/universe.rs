@@ -2,6 +2,8 @@ use std::collections::HashSet;
 
 use serde::Deserialize;
 
+use crate::projection::ScreenCalibration;
+
 const SOLAR_SYSTEMS_CSV: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/data/mapSolarSystems.csv"
@@ -32,7 +34,6 @@ pub struct Universe {
 pub struct ReachableSystem<'a> {
     pub system: &'a SolarSystem,
     pub distance_ly: f64,
-    pub bearing_deg: f64,
     pub angular_error_deg: f64,
 }
 
@@ -49,7 +50,8 @@ impl Universe {
         &self,
         origin: &SolarSystem,
         maximum_range_ly: f64,
-        measured_bearing_deg: f64,
+        calibration: ScreenCalibration,
+        tunnel_vector: [f64; 2],
     ) -> Vec<ReachableSystem<'_>> {
         let mut reachable: Vec<_> = self
             .systems
@@ -61,12 +63,13 @@ impl Universe {
                     return None;
                 }
 
-                let bearing_deg = map_bearing_deg(origin.position, system.position)?;
+                let universe_vector = position_delta(origin.position, system.position);
+                let angular_error_deg =
+                    calibration.minimum_angular_error_deg(universe_vector, tunnel_vector)?;
                 Some(ReachableSystem {
                     system,
                     distance_ly,
-                    bearing_deg,
-                    angular_error_deg: angular_difference_deg(measured_bearing_deg, bearing_deg),
+                    angular_error_deg,
                 })
             })
             .collect();
@@ -165,14 +168,12 @@ impl SolarSystem {
     }
 }
 
-fn map_bearing_deg(origin: [f64; 3], destination: [f64; 3]) -> Option<f64> {
-    let east = destination[0] - origin[0];
-    let north = destination[2] - origin[2];
-    (east != 0.0 || north != 0.0).then(|| east.atan2(north).to_degrees().rem_euclid(360.0))
-}
-
-fn angular_difference_deg(left: f64, right: f64) -> f64 {
-    ((left - right + 180.0).rem_euclid(360.0) - 180.0).abs()
+fn position_delta(origin: [f64; 3], destination: [f64; 3]) -> [f64; 3] {
+    [
+        destination[0] - origin[0],
+        destination[1] - origin[1],
+        destination[2] - origin[2],
+    ]
 }
 
 fn distance_ly(left: [f64; 3], right: [f64; 3]) -> f64 {
@@ -263,17 +264,21 @@ mod tests {
         );
         let universe = Universe::from_csv(&csv).expect("fixture should load");
         let origin = universe.system(30_000_001).expect("origin should exist");
-        let reachable = universe.systems_matching_jump_bearing(origin, 2.0, 80.0);
+        let calibration = ScreenCalibration {
+            north: [0.0, -1.0],
+            right_axis: [1.0, 0.0],
+        };
+        let reachable =
+            universe.systems_matching_jump_bearing(origin, 2.0, calibration, [1.0, 0.0]);
 
         let names: Vec<_> = reachable
             .iter()
             .map(|candidate| candidate.system.name.as_str())
             .collect();
         assert_eq!(names, ["Near", "Far"]);
-        assert!((reachable[0].bearing_deg - 90.0).abs() < 1e-12);
-        assert!((reachable[0].angular_error_deg - 10.0).abs() < 1e-12);
+        assert!(reachable[0].angular_error_deg < 1e-12);
         assert!((reachable[0].distance_ly - 0.5).abs() < 1e-12);
-        assert!((reachable[1].bearing_deg - 45.0).abs() < 1e-12);
+        assert!((reachable[1].angular_error_deg - 45.0).abs() < 1e-12);
         assert!((reachable[1].distance_ly - 2.0_f64.sqrt()).abs() < 1e-12);
     }
 }

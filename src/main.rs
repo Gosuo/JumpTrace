@@ -3,6 +3,7 @@ use std::path::Path;
 use eframe::egui;
 
 mod jump_range;
+mod projection;
 pub mod universe;
 
 fn main() -> eframe::Result {
@@ -24,6 +25,7 @@ struct NormalizedLine {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AnnotationTool {
     NorthAxis,
+    RightAxis,
     JumpTunnel,
 }
 
@@ -36,6 +38,7 @@ struct JumpTraceApp {
     screenshot_name: Option<String>,
     load_error: Option<String>,
     north_axis: Option<NormalizedLine>,
+    right_axis: Option<NormalizedLine>,
     jump_tunnel: Option<NormalizedLine>,
     annotation_tool: AnnotationTool,
     drawing_tool: Option<AnnotationTool>,
@@ -54,6 +57,7 @@ impl Default for JumpTraceApp {
             screenshot_name: None,
             load_error: None,
             north_axis: None,
+            right_axis: None,
             jump_tunnel: None,
             annotation_tool: AnnotationTool::NorthAxis,
             drawing_tool: None,
@@ -157,16 +161,28 @@ impl JumpTraceApp {
             }
         };
 
-        let Some(measured_bearing) = jump_bearing(self.north_axis, self.jump_tunnel) else {
-            ui.small("Draw both the north axis and jump tunnel to rank possible destinations.");
+        let Some(image_size) = self.screenshot.as_ref().map(egui::TextureHandle::size) else {
+            ui.small("Open a screenshot to rank possible destinations.");
             return;
         };
+        let (Some(north), Some(right_axis), Some(tunnel)) =
+            (self.north_axis, self.right_axis, self.jump_tunnel)
+        else {
+            ui.small("Draw the north, right 200 km, and jump-tunnel arrows to rank destinations.");
+            return;
+        };
+        let calibration = projection::ScreenCalibration {
+            north: image_pixel_vector(north, image_size),
+            right_axis: image_pixel_vector(right_axis, image_size),
+        };
+        let tunnel_vector = image_pixel_vector(tunnel, image_size);
 
         let maximum_range = self.jump_ship_class.max_range_ly();
         let candidates = universe.systems_matching_jump_bearing(
             origin,
             maximum_range,
-            f64::from(measured_bearing),
+            calibration,
+            tunnel_vector,
         );
         let heading = format!(
             "Ranked destinations from {}: {} within {:.2} ly",
@@ -179,9 +195,7 @@ impl JumpTraceApp {
             .id_salt("reachable_systems")
             .default_open(true)
             .show(ui, |ui| {
-                ui.small(format!(
-                    "Measured bearing: {measured_bearing:.1}°. Ranked by angular error on the SDE X/Z map plane (+Z north)."
-                ));
+                ui.small("Ranked by projecting each 3D SDE vector through the manually marked tactical-overlay axes.");
                 ui.small("Excludes high-sec, wormhole space, and Pochven; dynamic cyno restrictions are not included.");
                 egui::ScrollArea::vertical()
                     .id_salt("reachable_system_list")
@@ -189,10 +203,9 @@ impl JumpTraceApp {
                     .show(ui, |ui| {
                         for candidate in candidates {
                             ui.label(format!(
-                                "{} · error {:.1}° · bearing {:.1}° · {:.3} ly · security {:.1}",
+                                "{} · error {:.1}° · {:.3} ly · security {:.1}",
                                 candidate.system.name,
                                 candidate.angular_error_deg,
-                                candidate.bearing_deg,
                                 candidate.distance_ly,
                                 candidate.system.security
                             ));
@@ -217,6 +230,7 @@ impl JumpTraceApp {
                     .map(|name| name.to_string_lossy().into_owned());
                 self.load_error = None;
                 self.north_axis = None;
+                self.right_axis = None;
                 self.jump_tunnel = None;
                 self.annotation_tool = AnnotationTool::NorthAxis;
                 self.drawing_tool = None;
@@ -279,6 +293,11 @@ impl eframe::App for JumpTraceApp {
                 );
                 ui.selectable_value(
                     &mut self.annotation_tool,
+                    AnnotationTool::RightAxis,
+                    "Right axis (200 km)",
+                );
+                ui.selectable_value(
+                    &mut self.annotation_tool,
                     AnnotationTool::JumpTunnel,
                     "Jump tunnel",
                 );
@@ -299,6 +318,12 @@ impl eframe::App for JumpTraceApp {
                     self.north_axis = None;
                 }
                 if ui
+                    .add_enabled(self.right_axis.is_some(), egui::Button::new("Clear right"))
+                    .clicked()
+                {
+                    self.right_axis = None;
+                }
+                if ui
                     .add_enabled(
                         self.jump_tunnel.is_some(),
                         egui::Button::new("Clear tunnel"),
@@ -310,20 +335,26 @@ impl eframe::App for JumpTraceApp {
             });
 
             let instruction = match self.annotation_tool {
-                AnnotationTool::NorthAxis => "Drag from the axis origin toward north.",
+                AnnotationTool::NorthAxis => {
+                    "Drag from the overlay center to the north 200 km marker."
+                }
+                AnnotationTool::RightAxis => {
+                    "Drag from the same center to the right-side 200 km marker."
+                }
                 AnnotationTool::JumpTunnel => "Drag in the direction of the jump tunnel.",
             };
             ui.strong(format!(
                 "Active tool: {}",
                 match self.annotation_tool {
-                    AnnotationTool::NorthAxis => "North axis",
+                    AnnotationTool::NorthAxis => "North axis (200 km)",
+                    AnnotationTool::RightAxis => "Right axis (200 km)",
                     AnnotationTool::JumpTunnel => "Jump tunnel",
                 }
             ));
             ui.label(instruction);
             ui.small("Zoom with Ctrl/Cmd + mouse wheel or a trackpad pinch over the image.");
 
-            match jump_bearing(self.north_axis, self.jump_tunnel) {
+            match jump_bearing(self.north_axis, self.jump_tunnel, texture.size()) {
                 Some(bearing) => {
                     ui.label(format!("Jump bearing: {bearing:.1}° clockwise from north"));
                 }
@@ -383,9 +414,12 @@ impl eframe::App for JumpTraceApp {
 
                     if response.drag_stopped()
                         && let Some(completed_tool) = self.drawing_tool.take()
-                        && completed_tool == AnnotationTool::NorthAxis
                     {
-                        self.annotation_tool = AnnotationTool::JumpTunnel;
+                        self.annotation_tool = match completed_tool {
+                            AnnotationTool::NorthAxis => AnnotationTool::RightAxis,
+                            AnnotationTool::RightAxis => AnnotationTool::JumpTunnel,
+                            AnnotationTool::JumpTunnel => AnnotationTool::JumpTunnel,
+                        };
                     }
 
                     if let Some(axis) = self.north_axis {
@@ -395,6 +429,15 @@ impl eframe::App for JumpTraceApp {
                             axis,
                             "North",
                             egui::Color32::LIGHT_GREEN,
+                        );
+                    }
+                    if let Some(axis) = self.right_axis {
+                        paint_annotation(
+                            ui.painter(),
+                            response.rect,
+                            axis,
+                            "Right 200",
+                            egui::Color32::YELLOW,
                         );
                     }
                     if let Some(tunnel) = self.jump_tunnel {
@@ -449,23 +492,34 @@ fn denormalize_point(point: egui::Pos2, rect: egui::Rect) -> egui::Pos2 {
 fn line_for_tool(app: &mut JumpTraceApp, tool: AnnotationTool) -> &mut Option<NormalizedLine> {
     match tool {
         AnnotationTool::NorthAxis => &mut app.north_axis,
+        AnnotationTool::RightAxis => &mut app.right_axis,
         AnnotationTool::JumpTunnel => &mut app.jump_tunnel,
     }
+}
+
+fn image_pixel_vector(line: NormalizedLine, image_size: [usize; 2]) -> [f64; 2] {
+    [
+        f64::from(line.end.x - line.start.x) * image_size[0] as f64,
+        f64::from(line.end.y - line.start.y) * image_size[1] as f64,
+    ]
 }
 
 fn jump_bearing(
     north_axis: Option<NormalizedLine>,
     jump_tunnel: Option<NormalizedLine>,
-) -> Option<f32> {
-    let north = north_axis?.end - north_axis?.start;
-    let jump = jump_tunnel?.end - jump_tunnel?.start;
+    image_size: [usize; 2],
+) -> Option<f64> {
+    let north = image_pixel_vector(north_axis?, image_size);
+    let jump = image_pixel_vector(jump_tunnel?, image_size);
+    let north_length = north[0].hypot(north[1]);
+    let jump_length = jump[0].hypot(jump[1]);
 
-    if north.length_sq() <= f32::EPSILON || jump.length_sq() <= f32::EPSILON {
+    if north_length <= f64::EPSILON || jump_length <= f64::EPSILON {
         return None;
     }
 
-    let cross = north.x * jump.y - north.y * jump.x;
-    let dot = north.dot(jump);
+    let cross = north[0] * jump[1] - north[1] * jump[0];
+    let dot = north[0] * jump[0] + north[1] * jump[1];
     Some(cross.atan2(dot).to_degrees().rem_euclid(360.0))
 }
 
@@ -522,9 +576,19 @@ mod tests {
         let east = line(egui::vec2(1.0, 0.0));
         let west = line(egui::vec2(-1.0, 0.0));
 
-        assert_eq!(jump_bearing(Some(north), Some(north)), Some(0.0));
-        assert_eq!(jump_bearing(Some(north), Some(east)), Some(90.0));
-        assert_eq!(jump_bearing(Some(north), Some(west)), Some(270.0));
+        let image_size = [100, 100];
+        assert_eq!(
+            jump_bearing(Some(north), Some(north), image_size),
+            Some(0.0)
+        );
+        assert_eq!(
+            jump_bearing(Some(north), Some(east), image_size),
+            Some(90.0)
+        );
+        assert_eq!(
+            jump_bearing(Some(north), Some(west), image_size),
+            Some(270.0)
+        );
     }
 
     #[test]
@@ -532,6 +596,16 @@ mod tests {
         let north = line(egui::vec2(0.0, -1.0));
         let zero = line(egui::Vec2::ZERO);
 
-        assert_eq!(jump_bearing(Some(north), Some(zero)), None);
+        assert_eq!(jump_bearing(Some(north), Some(zero), [100, 100]), None);
+    }
+
+    #[test]
+    fn bearing_accounts_for_image_aspect_ratio() {
+        let north = line(egui::vec2(0.0, -0.1));
+        let jump = line(egui::vec2(0.1, -0.1));
+        let bearing =
+            jump_bearing(Some(north), Some(jump), [200, 100]).expect("lines should have a bearing");
+
+        assert!((bearing - 63.434_948_822_922_01).abs() < 1e-9);
     }
 }
