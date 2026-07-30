@@ -1,0 +1,65 @@
+name: Windows Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build Windows x86-64 release
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify tag matches Cargo version
+        shell: pwsh
+        run: |
+          $manifest = Get-Content Cargo.toml -Raw
+          if ($manifest -notmatch '(?m)^version\s*=\s*"([^"]+)"') {
+            throw "Could not read the package version from Cargo.toml"
+          }
+
+          $expectedTag = "v$($Matches[1])"
+          if ("${{ github.ref_name }}" -ne $expectedTag) {
+            throw "Tag ${{ github.ref_name }} does not match Cargo.toml version $expectedTag"
+          }
+
+      - name: Run tests
+        run: cargo test --locked
+
+      - name: Build release executable
+        run: cargo build --release --locked
+
+      - name: Prepare release files
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $fileName = "JumpTrace-$tag-windows-x86_64.exe"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/jumptrace.exe "dist/$fileName"
+
+          $hash = (Get-FileHash "dist/$fileName" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $fileName" | Set-Content "dist/$fileName.sha256"
+
+      - name: Create or update GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $assets = Get-ChildItem dist/* | ForEach-Object { $_.FullName }
+
+          if (gh release view $tag 2>$null) {
+            gh release upload $tag $assets --clobber
+          } else {
+            gh release create $tag $assets --verify-tag --generate-notes --title "JumpTrace $tag"
+          }
