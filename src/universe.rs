@@ -37,6 +37,8 @@ pub struct ReachableSystem<'a> {
     pub angular_error_deg: f64,
 }
 
+pub const MAX_REASONABLE_ANGULAR_ERROR_DEG: f64 = 5.0;
+
 impl Universe {
     pub fn load_embedded() -> Result<Self, String> {
         Self::from_csv(SOLAR_SYSTEMS_CSV)
@@ -66,6 +68,10 @@ impl Universe {
                 let universe_vector = position_delta(origin.position, system.position);
                 let angular_error_deg =
                     calibration.minimum_angular_error_deg(universe_vector, tunnel_vector)?;
+                if angular_error_deg > MAX_REASONABLE_ANGULAR_ERROR_DEG {
+                    return None;
+                }
+
                 Some(ReachableSystem {
                     system,
                     distance_ly,
@@ -275,10 +281,8 @@ mod tests {
             .iter()
             .map(|candidate| candidate.system.name.as_str())
             .collect();
-        assert_eq!(names, ["Near", "Far"]);
+        assert_eq!(names, ["Near"]);
         assert!(reachable[0].angular_error_deg < 1e-12);
         assert!((reachable[0].distance_ly - 0.5).abs() < 1e-12);
-        assert!((reachable[1].angular_error_deg - 45.0).abs() < 1e-12);
-        assert!((reachable[1].distance_ly - 2.0_f64.sqrt()).abs() < 1e-12);
     }
 }

@@ -44,6 +44,7 @@ struct JumpTraceApp {
     jump_tunnel: Option<NormalizedLine>,
     annotation_tool: AnnotationTool,
     drawing_tool: Option<AnnotationTool>,
+    drawing_line: Option<NormalizedLine>,
     zoom: f32,
     scroll_offset: egui::Vec2,
 }
@@ -63,6 +64,7 @@ impl Default for JumpTraceApp {
             jump_tunnel: None,
             annotation_tool: AnnotationTool::NorthAxis,
             drawing_tool: None,
+            drawing_line: None,
             zoom: 1.0,
             scroll_offset: egui::Vec2::ZERO,
         }
@@ -197,7 +199,10 @@ impl JumpTraceApp {
             .id_salt("reachable_systems")
             .default_open(true)
             .show(ui, |ui| {
-                ui.small("Ranked by projecting each 3D SDE vector through the manually marked tactical-overlay axes.");
+                ui.small(format!(
+                    "Showing destinations within {:.1}° of the marked tunnel, ranked by angular error.",
+                    universe::MAX_REASONABLE_ANGULAR_ERROR_DEG
+                ));
                 ui.small("Excludes high-sec, wormhole space, and Pochven; dynamic cyno restrictions are not included.");
                 egui::ScrollArea::vertical()
                     .id_salt("reachable_system_list")
@@ -225,6 +230,7 @@ impl JumpTraceApp {
         self.jump_tunnel = None;
         self.annotation_tool = AnnotationTool::NorthAxis;
         self.drawing_tool = None;
+        self.drawing_line = None;
         self.zoom = 1.0;
         self.scroll_offset = egui::Vec2::ZERO;
     }
@@ -428,25 +434,25 @@ impl eframe::App for JumpTraceApp {
                         && let Some(pointer) = response.interact_pointer_pos()
                     {
                         let point = normalize_point(pointer, response.rect);
-                        let tool = self.annotation_tool;
-                        self.drawing_tool = Some(tool);
-                        *line_for_tool(self, tool) = Some(NormalizedLine {
+                        self.drawing_tool = Some(self.annotation_tool);
+                        self.drawing_line = Some(NormalizedLine {
                             start: point,
                             end: point,
                         });
                     }
 
                     if response.dragged()
-                        && let (Some(pointer), Some(tool)) =
-                            (response.interact_pointer_pos(), self.drawing_tool)
-                        && let Some(line) = line_for_tool(self, tool)
+                        && let Some(pointer) = response.interact_pointer_pos()
+                        && let Some(line) = &mut self.drawing_line
                     {
                         line.end = normalize_point(pointer, response.rect);
                     }
 
                     if response.drag_stopped()
-                        && let Some(completed_tool) = self.drawing_tool.take()
+                        && let (Some(completed_tool), Some(completed_line)) =
+                            (self.drawing_tool.take(), self.drawing_line.take())
                     {
+                        *line_for_tool(self, completed_tool) = Some(completed_line);
                         self.annotation_tool = match completed_tool {
                             AnnotationTool::NorthAxis => AnnotationTool::RightAxis,
                             AnnotationTool::RightAxis => AnnotationTool::JumpTunnel,
@@ -480,6 +486,14 @@ impl eframe::App for JumpTraceApp {
                             "Jump",
                             egui::Color32::LIGHT_BLUE,
                         );
+                    }
+                    if let (Some(tool), Some(line)) = (self.drawing_tool, self.drawing_line) {
+                        let (label, color) = match tool {
+                            AnnotationTool::NorthAxis => ("North", egui::Color32::LIGHT_GREEN),
+                            AnnotationTool::RightAxis => ("Right", egui::Color32::YELLOW),
+                            AnnotationTool::JumpTunnel => ("Jump", egui::Color32::LIGHT_BLUE),
+                        };
+                        paint_annotation(ui.painter(), response.rect, line, label, color);
                     }
 
                     zoom_anchor
